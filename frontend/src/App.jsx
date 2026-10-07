@@ -7,7 +7,7 @@ import {
   Sparkles,
 } from "lucide-react";
 
-import { createCampaign, generateCampaign, listCampaigns } from "./api.js";
+import { createCampaign, generateCampaign, listCampaigns, getConfig } from "./api.js";
 
 const initialBrief = {
   product_name: "",
@@ -25,12 +25,23 @@ function App() {
   const [selectedCampaign, setSelectedCampaign] = useState(null);
   const [status, setStatus] = useState("Loading campaigns...");
   const [busyAction, setBusyAction] = useState("");
+  const [mode, setMode] = useState("loading");
+  const [generationFailed, setGenerationFailed] = useState(false);
+  const [selectedVersion, setSelectedVersion] = useState(null);
+  const [comparisonVersion, setComparisonVersion] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const versions = selectedCampaign?.creative_versions ?? [];
+  const currentVersion = versions.find(v => v.version === Number(selectedVersion)) ?? versions[0];
+  const comparison = versions.find(v => v.version === Number(comparisonVersion));
 
   useEffect(() => {
     let mounted = true;
 
-    listCampaigns()
-      .then((items) => {
+    setLoadFailed(false);
+    Promise.all([listCampaigns(), getConfig()])
+      .then(([items, config]) => {
+        setMode(config.generation_mode);
         if (!mounted) {
           return;
         }
@@ -42,18 +53,25 @@ function App() {
       .catch((error) => {
         if (mounted) {
           setStatus(error.message);
+          setLoadFailed(true);
         }
       });
 
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [loadAttempt]);
 
   const creativeCount = useMemo(
     () => campaigns.filter((campaign) => campaign.creative_set).length,
     [campaigns],
   );
+
+  useEffect(() => {
+    setSelectedVersion(null);
+    setComparisonVersion("");
+    setGenerationFailed(false);
+  }, [selectedCampaign?.id]);
 
   function updateBrief(field, value) {
     setBrief((current) => ({ ...current, [field]: value }));
@@ -82,16 +100,20 @@ function App() {
     }
 
     setBusyAction("generate");
+    setGenerationFailed(false);
     setStatus("");
 
     try {
       const campaign = await generateCampaign(selectedCampaign.id);
       setSelectedCampaign(campaign);
+      setSelectedVersion(campaign.creative_versions[0]?.version ?? null);
+      setComparisonVersion(String(campaign.creative_versions[1]?.version ?? ""));
       setCampaigns((current) =>
         current.map((item) => (item.id === campaign.id ? campaign : item)),
       );
     } catch (error) {
       setStatus(error.message);
+      setGenerationFailed(true);
     } finally {
       setBusyAction("");
     }
@@ -105,7 +127,7 @@ function App() {
             <Megaphone size={22} />
           </span>
           <div>
-            <p>Campaign workspace</p>
+            <p>Campaign workspace · {mode === "mock" ? "OFFLINE MOCK" : mode === "provider" ? "LIVE PROVIDER" : "Loading mode…"}</p>
             <h1>GenAI Ad Creative Studio</h1>
           </div>
         </div>
@@ -129,6 +151,7 @@ function App() {
                     ? "campaign-item is-active"
                     : "campaign-item"
                 }
+                disabled={Boolean(busyAction)}
                 key={campaign.id}
                 onClick={() => setSelectedCampaign(campaign)}
                 type="button"
@@ -186,7 +209,7 @@ function App() {
             onChange={updateBrief}
             value={brief.objective}
           />
-          <button className="primary-button" disabled={busyAction === "create"}>
+          <button className="primary-button" disabled={Boolean(busyAction)}>
             {busyAction === "create" ? (
               <LoaderCircle className="spin" size={18} />
             ) : (
@@ -207,7 +230,7 @@ function App() {
             </div>
             <button
               className="secondary-button"
-              disabled={!selectedCampaign || busyAction === "generate"}
+              disabled={!selectedCampaign || Boolean(busyAction)}
               onClick={handleGenerate}
               type="button"
             >
@@ -216,12 +239,31 @@ function App() {
               ) : (
                 <Sparkles size={18} />
               )}
-              Generate
+              {busyAction === "generate" ? "Generating…" : generationFailed ? "Retry generation" : "Generate new version"}
             </button>
           </div>
 
           {selectedCampaign?.creative_set ? (
-            <CreativeSet creativeSet={selectedCampaign.creative_set} />
+            <>
+              <p className="version-note">Each successful generation is saved. Earlier versions remain available.</p>
+              <div className="version-controls">
+                <label className="field"><span>View version</span>
+                  <select aria-label="View version" value={currentVersion?.version ?? ""} onChange={e => setSelectedVersion(e.target.value)}>
+                    {versions.map(v => <option key={v.version} value={v.version}>Version {v.version} · {v.metadata.mode}</option>)}
+                  </select>
+                </label>
+                <label className="field"><span>Compare with</span>
+                  <select aria-label="Compare with" value={comparisonVersion} onChange={e => setComparisonVersion(e.target.value)}>
+                    <option value="">No comparison</option>
+                    {versions.map(v => <option key={v.version} value={v.version}>Version {v.version} · {v.metadata.mode}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className={comparison ? "version-comparison" : ""}>
+                <div><VersionInfo version={currentVersion} /><CreativeSet creativeSet={currentVersion?.creative_set ?? selectedCampaign.creative_set} /></div>
+                {comparison && <div><VersionInfo version={comparison} /><CreativeSet creativeSet={comparison.creative_set} /></div>}
+              </div>
+            </>
           ) : (
             <div className="empty-state">
               <strong>Creative set pending</strong>
@@ -231,9 +273,21 @@ function App() {
         </section>
       </section>
 
-      <p className={status ? "status-line" : "status-line is-hidden"}>{status}</p>
+      <p role="status" aria-live="polite" className={status ? "status-line" : "status-line is-hidden"}>{status}</p>
+      {loadFailed && <button type="button" onClick={() => setLoadAttempt(n => n + 1)}>Retry loading campaigns</button>}
     </main>
   );
+}
+
+function VersionInfo({ version }) {
+  if (!version) return null;
+  const m = version.metadata;
+  return <div className="version-meta">
+    <h4>Version {version.version} · {m.mode.toUpperCase()}</h4>
+    <p>{new Date(version.created_at).toLocaleString()} · {m.latency_ms} ms · {m.attempts} attempt(s)</p>
+    <p>Tokens: {m.input_tokens ?? "unavailable"} in / {m.output_tokens ?? "unavailable"} out</p>
+    <small>Request: {m.request_id}</small>
+  </div>;
 }
 
 function CreativeSet({ creativeSet }) {
@@ -261,7 +315,10 @@ function CreativeColumn({ items, label }) {
 }
 
 function Field({ label, name, onChange, textarea = false, value }) {
+  const limits = {product_name: [2, 120], product_description: [10, 1200], target_audience: [3, 240], objective: [3, 240]};
   const inputProps = {
+    minLength: limits[name]?.[0],
+    maxLength: limits[name]?.[1],
     id: name,
     name,
     onChange: (event) => onChange(name, event.target.value),

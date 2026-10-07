@@ -1,7 +1,6 @@
-from fastapi.testclient import TestClient
-
 from app.config import Settings
 from app.main import create_app
+from fastapi.testclient import TestClient
 
 
 def _client(tmp_path) -> TestClient:
@@ -46,4 +45,3 @@ def test_campaign_workflow(tmp_path):
     assert len(creative_set["headlines"]) == 3
     assert "Signal Desk" in creative_set["headlines"][0]
     assert len(creative_set["campaign_concepts"]) == 3
-

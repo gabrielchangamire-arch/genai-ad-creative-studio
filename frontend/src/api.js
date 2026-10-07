@@ -11,7 +11,12 @@ async function request(path, options) {
 
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.detail ?? "Request failed.");
+    const detail = body?.detail;
+    const message = typeof detail === "string" ? detail
+      : Array.isArray(detail) ? "Check the brief: one or more fields are invalid."
+      : detail?.message ?? "Request failed.";
+    const error = new Error(`${message}${detail?.code ? ` (${detail.code})` : ""}${detail?.request_id ? ` Request: ${detail.request_id}` : ""}`);
+    throw error;
   }
 
   return response.json();
@@ -34,3 +39,7 @@ export function generateCampaign(campaignId) {
   });
 }
 
+
+export function getConfig() {
+  return request("/api/config");
+}
