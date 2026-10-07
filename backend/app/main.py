@@ -1,8 +1,10 @@
-from fastapi import FastAPI, HTTPException, status
+from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings, get_settings
-from .schemas import CampaignCreate, CampaignRead, CreativeSet, HealthRead
+from .schemas import CampaignCreate, CampaignRead, HealthRead
 from .services.generation import (
     CopyGenerator,
     GenerationConfigurationError,
@@ -25,6 +27,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def request_identity(request: Request, call_next):
+        request.state.request_id = str(uuid4())
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request.state.request_id
+        return response
+
+    @app.get("/api/config")
+    def public_config() -> dict:
+        return {"generation_mode": resolved_settings.generation_mode}
 
     @app.get("/api/health", response_model=HealthRead)
     def health() -> HealthRead:
@@ -54,19 +67,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/campaigns/{campaign_id}/generate",
         response_model=CampaignRead,
     )
-    def generate_campaign_copy(campaign_id: str) -> dict:
+    def generate_campaign_copy(campaign_id: str, request: Request) -> dict:
         campaign = store.get_campaign(campaign_id)
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found.")
 
         try:
-            creative_set: CreativeSet = generator.create_set(CampaignRead.model_validate(campaign))
+            result = generator.generate(
+                CampaignRead.model_validate(campaign), request.state.request_id
+            )
         except GenerationConfigurationError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "configuration_error",
+                    "message": str(exc),
+                    "request_id": request.state.request_id,
+                },
+            ) from exc
         except GenerationProviderError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": exc.code,
+                    "message": "Generation failed. Previous versions are preserved.",
+                    "request_id": request.state.request_id,
+                    "metadata": exc.metadata.model_dump(),
+                },
+            ) from exc
 
-        saved_campaign = store.save_creative_set(campaign_id, creative_set)
+        saved_campaign = store.save_creative_set(
+            campaign_id, result.creative_set, result.metadata
+        )
         if not saved_campaign:
             raise HTTPException(status_code=404, detail="Campaign not found.")
 
@@ -76,4 +108,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 app = create_app()
-

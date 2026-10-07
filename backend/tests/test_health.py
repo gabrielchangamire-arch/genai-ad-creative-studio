@@ -1,7 +1,6 @@
-from fastapi.testclient import TestClient
-
 from app.config import Settings
 from app.main import create_app
+from fastapi.testclient import TestClient
 
 
 def test_health_check(tmp_path):
@@ -19,4 +18,3 @@ def test_health_check(tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-

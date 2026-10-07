@@ -449,3 +449,11 @@ button {
   }
 }
 
+
+.version-note, .version-meta { color: #526175; font-size: 0.85rem; }
+.version-controls, .version-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.version-meta { padding: 12px; border-radius: 8px; background: #f2f5f8; overflow-wrap: anywhere; margin-bottom: 12px; }
+.version-meta h4, .version-meta p { margin: 6px 0; }
+.version-comparison .creative-grid { grid-template-columns: 1fr; }
+button:disabled { opacity: .55; cursor: wait; }
+@media (max-width: 850px) { .version-comparison { grid-template-columns: 1fr; } }

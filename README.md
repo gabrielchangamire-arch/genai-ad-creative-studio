@@ -1,93 +1,124 @@
 # GenAI Ad Creative Studio
 
-GenAI Ad Creative Studio is a full-stack campaign workspace for drafting advertising copy from a product brief. It keeps campaign inputs and creative sets together so the copy workflow can be tested locally before a provider integration is enabled.
+A local campaign workspace with FastAPI, React and SQLite. Draft copy from a brief, keep every
+successful creative version, and compare versions side by side. Mock mode works without a key;
+the optional OpenAI Responses adapter is tested through mocked HTTP contracts.
 
-## Features
+## Quick start
 
-- Create campaign briefs with product details, audience, tone, and objective.
-- Store campaigns in SQLite for local development.
-- Browse saved campaigns and reopen a creative set.
-- Generate headlines, descriptions, calls to action, and campaign concepts.
-- Run in mock generation mode without a provider key.
-- Validate the backend workflow with pytest.
+Requirements: Python 3.12+ and Node 22.12+ (or Node 24/26). From the repository root on macOS/Linux:
 
-## Tech Stack
-
-- Backend: Python, FastAPI, SQLite
-- Frontend: React, Vite
-- Testing: pytest, FastAPI TestClient
-- Automation: GitHub Actions
-
-## Architecture
-
-The FastAPI backend owns campaign storage and generation orchestration. Campaigns are persisted in a local SQLite database through a small repository layer, while the generation service selects mock mode or a provider-backed mode from environment configuration.
-
-The React client calls the campaign API and keeps the first screen focused on the workflow:
-
-1. Capture a campaign brief.
-2. Save the campaign.
-3. Generate and review a creative set.
-4. Reopen prior campaigns from the workspace list.
-
-## Setup
-
-### Backend
-
-```powershell
-Copy-Item .env.example .env
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r backend\requirements-dev.txt
-uvicorn app.main:app --app-dir backend --reload
+```bash
+cp .env.example .env
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r backend/requirements-dev.txt
+uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-The backend listens on `http://localhost:8000`.
+In a second terminal:
 
-### Frontend
-
-Open a second terminal from the repository root:
-
-```powershell
+```bash
 cd frontend
-npm install
-npm run dev
+npm ci
+npm run dev -- --host 127.0.0.1
 ```
 
-The Vite dev server listens on `http://localhost:5173` and proxies API calls to the backend during local development.
+Open <http://127.0.0.1:5173>. Vite proxies `/api` to the backend; leave `VITE_API_BASE_URL` empty
+for this local setup. On Windows PowerShell, use `Copy-Item .env.example .env`,
+`python -m venv .venv` and `.\.venv\Scripts\Activate.ps1`; the remaining commands are the same.
+The database is created automatically in ignored `backend/data/studio.db`.
 
-## Tests
+## Reviewer demo
 
-Run backend tests from the repository root:
+1. Confirm the header says **OFFLINE MOCK**.
+2. Save a brief with a product name, factual product detail, audience, tone and objective.
+3. Choose **Generate new version** twice. Each success appends a version; mock content is
+   deterministic, so identical briefs produce identical text with distinct saved version metadata.
+4. Use **View version** and **Compare with** to compare the outputs. Reload to verify persistence.
+5. During generation, prior output stays visible and competing actions are disabled. A failure
+   preserves every previous version and offers **Retry generation**.
 
-```powershell
-cd backend
-pytest
+The live header reads **LIVE PROVIDER**. Configure only the backend's ignored `.env` to enable it:
+
+| Variable | Purpose / default |
+| --- | --- |
+| `GENERATION_MODE` | `mock` (default) or `provider` |
+| `GENAI_PROVIDER_API_KEY` | Server-side credential, never a `VITE_` value |
+| `GENAI_PROVIDER_BASE_URL` | `https://api.openai.com/v1`; this adapter rejects other endpoints |
+| `GENAI_PROVIDER_MODEL` | `gpt-5-mini`; select a model your account can access |
+| `GENAI_TIMEOUT_SECONDS` | Per-I/O timeout, default 20; maximum 60 |
+| `GENAI_MAX_RETRIES` | Default 2 retries (3 attempts); maximum 3 |
+| `GENAI_MAX_OUTPUT_TOKENS` | Default 2,000; range 128–8,000 |
+| `DATABASE_URL` | SQLite path; see `.env.example` |
+| `FRONTEND_ORIGINS` | Allowed browser origins |
+
+Restart the backend after changing configuration. No live calls have been verified. Supply an API
+key and choose a provider project spending limit before opting in; don't paste credentials into
+briefs or command arguments. Provider timeouts can still incur charges, and retry counts are not
+a dollar spending cap. Missing usage stays null; this app does not estimate model cost.
+
+## Architecture and failure handling
+
+```text
+React brief / version comparison → FastAPI → CopyGenerator → mock or Responses HTTP
+                                      ↓            ↓
+                               SQLite transaction  strict output validation
+                               append version + update latest
 ```
 
-Build the frontend production bundle:
+The existing generation abstraction owns both modes. New outputs require 1–5 nonblank strings
+per field: headlines ≤120 characters, descriptions ≤300, calls to action ≤80, concepts ≤500.
+The provider receives only the brief, with no prior versions or settings. Requests use strict
+`text.format` JSON schema, `store=false`, no tools and an output-token cap. Schema validation
+cannot establish that advertising claims are true: review copy against actual product facts.
 
-```powershell
+Timeouts, network errors, 408/409/429 and server errors use bounded exponential backoff with jitter.
+Authentication/client errors, refusals, malformed or incomplete output and exhausted quota fail
+cleanly. Retry-After is honored within a two-second delay budget; longer waits fail for manual retry.
+Responses include server-generated request IDs. Saved versions show mode, model (when live),
+attempts, latency and token usage where supplied. Errors expose fixed codes and safe metadata,
+never response bodies or authorization headers. API keys are omitted from settings representations.
+
+SQLite saves each version and updates the latest set atomically. A transaction serializes concurrent
+version allocation. An idempotent migration imports pre-existing creative sets without truncating
+or rejecting historical output. Failed generation makes no database write.
+
+## Tests and reproducible evidence
+
+```bash
+.venv/bin/python -m pytest backend/tests -q
 cd frontend
+npm ci
+npm test
 npm run build
+npm audit
 ```
 
-## Environment Variables
+The backend includes HTTP contract, validation, retry, persistence, migration, concurrent-write and
+rollback tests. The frontend tests loading, failure/retry, mode labels and version comparison.
+CI runs both suites and the production build. See [actual verification results](evidence/verification.md)
+and the [interview walkthrough](docs/interview-walkthrough.md).
 
-| Variable | Purpose | Default |
-| --- | --- | --- |
-| `DATABASE_URL` | SQLite database location for campaign storage. | `backend/data/studio.db` |
-| `GENERATION_MODE` | Generation mode. Use `mock` locally or `provider` for a configured provider endpoint. | `mock` |
-| `GENAI_PROVIDER_API_KEY` | API key sent to the configured provider endpoint. | Empty |
-| `GENAI_PROVIDER_BASE_URL` | Provider endpoint that returns structured copy data. | Empty |
-| `GENAI_PROVIDER_MODEL` | Model identifier passed to the provider endpoint. | Empty |
-| `FRONTEND_ORIGINS` | Comma-separated origins allowed by backend CORS. | `http://localhost:5173` |
-| `VITE_API_BASE_URL` | Optional frontend API origin for non-proxied deployments. | Empty |
+One opt-in live smoke sends a synthetic brief, with retries disabled:
 
-Start with `.env.example`, keep the real `.env` file local, and leave `GENERATION_MODE=mock` until provider settings are ready.
+```bash
+STUDIO_RUN_LIVE=1 .venv/bin/python -m pytest backend/tests/test_live.py -m live -q -s
+```
 
-## Future Improvements
+Normal tests skip it. In PowerShell, set `$env:STUDIO_RUN_LIVE="1"` first. Output includes only safe
+metadata; a passing mock contract is not evidence of a successful live call.
 
-- Add campaign revisions and side-by-side creative comparisons.
-- Support PostgreSQL for deployed environments.
-- Add provider-specific adapters with retry and usage tracking.
-- Add export flows for review docs and ad platform templates.
+## Limitations
+
+This is a single-user loopback demo. It has no authentication, per-user isolation or server request
+quota. Do not expose it publicly without those controls. SQLite and loading full campaign history
+are deliberate small-workspace choices; pagination and a multi-user store would be next steps.
+Creative quality, conversion lift, product truth and live provider reliability are not measured.
+Browser retries create new versions on success; provider attempts are not guaranteed idempotent.
+There is no deployment, ad-platform publishing or automated campaign execution.
+
+Provider contract checked 2026-10-07 against official
+[Responses documentation](https://developers.openai.com/api/reference/python/resources/responses),
+[structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) and
+[error codes](https://developers.openai.com/api/docs/guides/error-codes).
